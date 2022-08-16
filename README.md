@@ -1,4 +1,4 @@
-# Music Composer
+# Music Composer, Step
 This repository is dedicated to synthesizing symbolic music in MIDI format using the Music Transformer model (103M paramaters). In the repository, you can find a demo notebook for generating on a GPU Google Colab instance, data preparation and model training code.
 
 ## Table of Contents
