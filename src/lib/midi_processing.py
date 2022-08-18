@@ -54,7 +54,7 @@ def decode(encoded):
         decoded MIDI.
     """
     midi_out = pretty_midi.PrettyMIDI()
-    midi_out.instruments.append(pretty_midi.Instrument(0, name='piano'))
+    midi_out.instruments.append(pretty_midi.Instrument(0, is_drum=True, name='piano'))
     notes = midi_out.instruments[0].notes
     
     notes_tmp = {}  # pitch: [vel, start, end]
