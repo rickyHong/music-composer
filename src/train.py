@@ -54,8 +54,8 @@ def create_dataloaders(batch_size, num_workers=0):
     
     aug = MusicAugmentations()
     
-    tr_dataset = YoutubeDataset(DS_FILE_PATH, transform=aug)
-    vl_dataset = YoutubeDataset(DS_FILE_PATH, transform=None)
+    tr_dataset = EncodedDataset(DS_FILE_PATH, transform=aug)
+    vl_dataset = EncodedDataset(DS_FILE_PATH, transform=None)
     np.random.seed(0)
     idxs = np.random.permutation(len(tr_dataset))
     vl, tr = np.split(idxs, [4000])
