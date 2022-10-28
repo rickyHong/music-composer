@@ -51,3 +51,22 @@ Training parameters are set inside the script in the params variable. A descript
 ## YoutubeDataset
 Installing YouTubeDataset
 git clone https://github.com/secretlocation/YouTubeDataset.git cd YouTubeDataset pip install -e .
+
+from YouTubeDataset import YouTubeDataset
+
+# Download Secret Location YouTube channel and view it as the default, [ time, frame ]
+ds0 = YouTubeDataset('data', 'SecretLocation', 'train', 
+                    download=True,
+                    api_key=API_KEY,
+                    user_name='thesecretlocation',
+                    splits={'train':0.90, 'test':0.1})                  
+
+# print data sizes and value for first batch
+for batch in ds0:
+    for k, v in zip(ds0.fields, batch):
+        s = np.shape(v)
+        if len(s) == 0:
+            print(k,v)
+        else:
+            print(k,s)
+    break
