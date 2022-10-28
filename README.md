@@ -47,3 +47,7 @@ As music for transcription, you can use for example [Free Music Archive] (https:
 A script for training a model on prepared data can be run using:
 ```python train.py```
 Training parameters are set inside the script in the params variable. A description of each of the parameters will be given later in this section.
+
+## YoutubeDataset
+Installing YouTubeDataset
+git clone https://github.com/secretlocation/YouTubeDataset.git cd YouTubeDataset pip install -e .
