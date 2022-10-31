@@ -6,6 +6,7 @@ import argparse
 import itertools
 import numpy as np
 import pandas as pd
+import YouTubeDataset as YoutubeDataset
 from tqdm import tqdm
 
 import torch
@@ -15,12 +16,11 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Subset, DistributedSampler, Dataset
 
-
 from lib import constants
 from lib.model.transformer import MusicTransformer
-from lib.inverse_power_with_warmup_scheduler import InversePowerWithWarmupLRScheduler
-from lib.encoded_dataset import EncodedDataset
-from lib.augmentations import MusicAugmentations
+from lib.util.inverse import InversePowerWithWarmupLRScheduler
+from lib.util.encoded_dataset import EncodedDataset
+from lib.util.augmentations import MusicAugmentations
 
 PAD_TOKEN = constants.TOKEN_PAD
 
@@ -28,21 +28,21 @@ params = dict(
     NAME = 'model_name',
     DS_FILE_PATH = 'ds_files.pt',
     SEED = 0,
-    num_epochs = 100,
+    num_epochs = 1000,
     batch_size = 2,
     num_workers = 0,
-    val_every = 6000,
-    save_every = 6000,
+    val_every = 50000,
+    save_every = 2000,
     lr = 1e-4,
     use_scheduler = True,
     peak_lr = 1e-4,
-    warmup_steps = 4000,
+    warmup_steps = 1000,
     power = 2,
     shift = 100000,
     LOAD_NAME = '',
     LOG_TOTAL_NORM = True,
     CLIPPING = False,
-    gpus = [0,1,2,3],
+    gpus = [0],
 )
 
 globals().update(params)
@@ -54,13 +54,22 @@ def create_dataloaders(batch_size, num_workers=0):
     
     aug = MusicAugmentations()
     
-    tr_dataset = EncodedDataset(DS_FILE_PATH, transform=aug)
+    #tr_dataset = YoutubeDataset(DS_FILE_PATH, transform=aug)
+    #vl_dataset = YoutubeDataset(DS_FILE_PATH, transform=None)
+    tr_dataset = EncodedDataset(DS_FILE_PATH, transform=None)
     vl_dataset = EncodedDataset(DS_FILE_PATH, transform=None)
+    print ("tr_dataset length : [%d]", len(tr_dataset))
+    print ("vl_dataset length : [%d]", len(vl_dataset))
     np.random.seed(0)
     idxs = np.random.permutation(len(tr_dataset))
-    vl, tr = np.split(idxs, [4000])
+    print ("idxs = {}", idxs)
+    # All training 
+    tr, vl = np.split(idxs, [40])
+
     train_dataset = Subset(tr_dataset, tr)
-    val_dataset = Subset(vl_dataset, vl)
+    print ("train_dataset len = [%d]", len(train_dataset))
+    val_dataset = Subset(tr_dataset, tr)
+    print ("val_dataset  len = [%d]", len(val_dataset))
     
     sampler = DistributedSampler(train_dataset, world_size, rank, True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler, pin_memory=False, num_workers=num_workers)
@@ -73,11 +82,12 @@ def create_dataloaders(batch_size, num_workers=0):
 def init_model(lr, seed=0):
     '''Initializes model, loads weights if necessary and creates optimizer'''
     torch.manual_seed(seed)
-    model = MusicTransformer(device, n_layers=12, d_model=1024, dim_feedforward=2048, num_heads=16, vocab_size=390+4, rpr=True).to(device)
+    #model = MusicTransformer(device, n_layers=12, d_model=1024, dim_feedforward=2048, num_heads=16, vocab_size=390+4, rpr=True).to(device)
+    model = MusicTransformer(device, n_layers=6, d_model=512, dim_feedforward=1024, num_heads=8, vocab_size=390+4, rpr=True).to(device)
     if LOAD_NAME != '':
         model.load_state_dict(torch.load(LOAD_NAME, map_location=device))
         print(f'Loaded model from {LOAD_NAME}')
-    model = DistributedDataParallel(model, device_ids=[gpus[rank]])
+    #model = DistributedDataParallel(model, device_ids=[gpus[0]])
     print(sum((torch.numel(x) for x in model.parameters()))/1e6, 'M parameters')
     optimizer = torch.optim.AdamW(model.parameters(), lr, weight_decay=1e-5)
     return model, optimizer
@@ -106,7 +116,7 @@ def validate(model, val_loader):
     model.train()
     return CE/n, ACC/n
 
-def train_ddp(rank_, world_size_):
+def train_ddp(rank_ = 0, world_size_ = 1):
     global device, NAME, SEED, rank, world_size
     rank, world_size = rank_, world_size_
     
@@ -118,6 +128,7 @@ def train_ddp(rank_, world_size_):
     print(rank, gpus[rank], device)
     
     train_loader, val_loader = create_dataloaders(batch_size, num_workers)
+    print("train_loader : {}", train_loader)
     
     model, optimizer = init_model(lr, SEED)
     if use_scheduler:
@@ -139,6 +150,7 @@ def train_ddp(rank_, world_size_):
     best_ce = float('inf')
     patience = 0
     for ep in range(num_epochs):
+        print ("Epochs : [%d]", ep)
         model.train()
         train_loader.sampler.set_epoch(ep)
         if rank == 0:
@@ -169,22 +181,22 @@ def train_ddp(rank_, world_size_):
                 scheduler.step()
                 
             if i_step == warmup_steps - 1 and rank == 0:
-                torch.save(model.module.state_dict(), f'{save_dir}/model_{save_name}_after_warmup.pt')
+                torch.save(model.state_dict(), f'{save_dir}/model_{save_name}_after_warmup.pt')
 
             if rank == 0:
                 # logs
                 LS['loss'] += [loss.item()]
                 LS['lr'] += [optimizer.param_groups[0]['lr']]
-                writer.add_scalar(f'Train/embedding_weight_norm', torch.norm(model.module.embedding.weight).item(), i_step)
-                writer.add_scalar(f'Train/embedding_grad_norm', torch.norm(model.module.embedding.weight.grad).item(), i_step)
-                writer.add_scalar(f'Train/output_weight_norm', torch.norm(model.module.Wout.weight).item(), i_step)
-                writer.add_scalar(f'Train/output_grad_norm', torch.norm(model.module.Wout.weight.grad).item(), i_step)
+                writer.add_scalar(f'Train/embedding_weight_norm', torch.norm(model.embedding.weight).item(), i_step)
+                writer.add_scalar(f'Train/embedding_grad_norm', torch.norm(model.embedding.weight.grad).item(), i_step)
+                writer.add_scalar(f'Train/output_weight_norm', torch.norm(model.Wout.weight).item(), i_step)
+                writer.add_scalar(f'Train/output_grad_norm', torch.norm(model.Wout.weight.grad).item(), i_step)
                 writer.add_scalar(f'Train/loss', loss.item(), i_step)
                 writer.add_scalar(f'Train/perplexity', math.exp(loss.item()), i_step)
                 writer.add_scalar(f'Train/lr', optimizer.param_groups[0]['lr'], i_step)
                 if LOG_TOTAL_NORM:
                     total_norm = 0.
-                    for p in model.module.parameters():
+                    for p in model.parameters():
                         param_norm = p.grad.detach().data.norm(2)
                         total_norm += param_norm.item() ** 2
                     total_norm = total_norm ** 0.5
@@ -216,15 +228,20 @@ def train_ddp(rank_, world_size_):
                     print(f'{ep}: val_ce={val_ce}, val_acc={val_acc}, patience={patience}')
                 i_val += 1
 
+            #print ("i_step : [%d]", i_step)
             # CHECKPOINT
             if (i_step % save_every == save_every-1) and rank == 0:
                 torch.save({'history':LS,'epoch':ep,'params':params}, f'{save_dir}/hist_{save_name}.pt')
-                torch.save(model.module.state_dict(), f'{save_dir}/model_{save_name}_{(i_step+1)//1000}k.pt')
+                #torch.save(model.module.state_dict(), f'{save_dir}/model_{save_name}_{(i_step+1)//1000}k.pt')
+                torch.save(model.state_dict(), f'{save_dir}/model_{save_name}_{(i_step+1)}.pt')
     
     torch.distributed.destroy_process_group()
     
 
 if __name__ == "__main__":
+    """
     print(NAME, SEED)
     world_size = len(gpus)
-    torch.multiprocessing.spawn(train_ddp, args=(world_size,), nprocs=world_size, join=True)
+    torch.multiprocessing.spawn(train_ddp, args=(1,), nprocs=1, join=True)
+    """
+    train_ddp()
